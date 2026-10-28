@@ -3,6 +3,8 @@
 // @namespace    https://nadia.moe/
 // @version      0.12
 // @description  Stops the Threads view from marking threads as read when navigating. Ctrl+Alt+R toggles it.
+// @updateURL    https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-keep-threads-unread.user.js
+// @downloadURL  https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-keep-threads-unread.user.js
 // @match        https://*.slack.com/*
 // @run-at       document-start
 // @grant        unsafeWindow

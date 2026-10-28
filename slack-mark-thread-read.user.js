@@ -3,6 +3,8 @@
 // @namespace    https://nadia.moe/
 // @version      0.4
 // @description  Adds a Mark as Read button to each thread in the Threads view.
+// @updateURL    https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-mark-thread-read.user.js
+// @downloadURL  https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-mark-thread-read.user.js
 // @match        https://*.slack.com/*
 // @run-at       document-end
 // @grant        none
