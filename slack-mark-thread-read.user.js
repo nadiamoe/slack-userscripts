@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slack: mark thread as read
 // @namespace    https://nadia.moe/
-// @version      0.4
+// @version      0.5
 // @description  Adds a Mark as Read button to each thread in the Threads view.
 // @updateURL    https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-mark-thread-read.user.js
 // @downloadURL  https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-mark-thread-read.user.js
@@ -12,6 +12,7 @@
 
 (() => {
   const MARK_URL = '/api/subscriptions.thread.mark';
+  const HISTORY_URL = '/api/conversations.history';
   const MARKER = '_userscript_mark';
   const HEADING_ID = /^threads_view_heading-([A-Z0-9]+)-([\d.]+)$/;
   const BUTTON_ATTR = 'data-mark-thread-read';
@@ -26,36 +27,40 @@
     return team.token;
   };
 
-  const getLastReplyTs = (channel, threadTs) => {
-    if (!document.getElementById(`threads_view_footer-${channel}-${threadTs}`)) return null;
-    const prefix = `threads_view_${channel}-${threadTs}-`;
-    return [...document.querySelectorAll(`[id^="${prefix}"]`)]
-      .map((el) => el.id.slice(prefix.length))
-      .sort()
-      .at(-1);
+  const callApi = async (path, fields) => {
+    const body = new FormData();
+    const common = { token: getToken(), _x_mode: 'online', _x_app_name: 'client', _x_sonic: 'true' };
+    for (const [name, value] of Object.entries({ ...common, ...fields })) {
+      body.append(name, value);
+    }
+    const url = new URL(path, location.origin);
+    const response = await fetch(url, { method: 'POST', body, credentials: 'same-origin' });
+    const json = await response.json();
+    if (!json.ok) throw new Error(`slack said ${json.error}`);
+    return json;
   };
 
-  const markRead = async (channel, threadTs, ts) => {
-    const body = new FormData();
-    const fields = {
-      token: getToken(),
+  const getLastReplyTs = async (channel, threadTs) => {
+    const { messages } = await callApi(HISTORY_URL, {
+      channel,
+      latest: threadTs,
+      inclusive: 'true',
+      limit: '1',
+    });
+    const lastReplyTs = messages[0]?.latest_reply;
+    if (!lastReplyTs) throw new Error('no latest_reply on the thread parent');
+    return lastReplyTs;
+  };
+
+  const markRead = (channel, threadTs, ts) =>
+    callApi(MARK_URL, {
       channel,
       thread_ts: threadTs,
       ts,
       read: '1',
       _x_reason: 'marking-thread',
-      _x_mode: 'online',
-      _x_app_name: 'client',
-      _x_sonic: 'true',
       [MARKER]: '1',
-    };
-    for (const [name, value] of Object.entries(fields)) {
-      body.append(name, value);
-    }
-    const url = new URL(MARK_URL, location.origin);
-    const response = await fetch(url, { method: 'POST', body, credentials: 'same-origin' });
-    if (!(await response.json()).ok) throw new Error('slack said no');
-  };
+    });
 
   const showStatus = (button, text) => {
     button.textContent = text;
@@ -73,10 +78,9 @@
     button.setAttribute(BUTTON_ATTR, '');
     button.textContent = LABEL;
     button.addEventListener('click', async () => {
-      const ts = getLastReplyTs(channel, threadTs);
-      if (!ts) return showStatus(button, 'Scroll to the end first');
       button.disabled = true;
       try {
+        const ts = await getLastReplyTs(channel, threadTs);
         await markRead(channel, threadTs, ts);
         showStatus(button, 'Done');
         setTimeout(() => {
