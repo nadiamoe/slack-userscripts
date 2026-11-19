@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Slack: mark thread as read
 // @namespace    https://nadia.moe/
-// @version      0.5
+// @version      0.6
 // @description  Adds a Mark as Read button to each thread in the Threads view.
 // @updateURL    https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-mark-thread-read.user.js
 // @downloadURL  https://raw.githubusercontent.com/nadiamoe/slack-userscripts/main/slack-mark-thread-read.user.js
@@ -12,12 +12,14 @@
 
 (() => {
   const MARK_URL = '/api/subscriptions.thread.mark';
-  const HISTORY_URL = '/api/conversations.history';
+  const REPLIES_URL = '/api/conversations.replies';
   const MARKER = '_userscript_mark';
   const HEADING_ID = /^threads_view_heading-([A-Z0-9]+)-([\d.]+)$/;
   const BUTTON_ATTR = 'data-mark-thread-read';
   const LABEL = 'Mark as Read';
-  const markedRead = new Map();
+  const UNKNOWN_LABEL = '❔ Mark as read';
+  const STALE_MS = 15000;
+  const threadStates = new Map();
 
   const getToken = () => {
     const { teams } = JSON.parse(localStorage.localConfig_v2);
@@ -40,17 +42,31 @@
     return json;
   };
 
-  const getLastReplyTs = async (channel, threadTs) => {
-    const { messages } = await callApi(HISTORY_URL, {
+  const fetchThreadState = async (channel, threadTs) => {
+    const { messages } = await callApi(REPLIES_URL, {
       channel,
-      latest: threadTs,
+      ts: threadTs,
       inclusive: 'true',
       limit: '1',
     });
-    const lastReplyTs = messages[0]?.latest_reply;
-    if (!lastReplyTs) throw new Error('no latest_reply on the thread parent');
-    return lastReplyTs;
+    const { latest_reply: latestReply, last_read: lastRead } = messages[0] ?? {};
+    if (!latestReply) throw new Error('no latest_reply on the thread parent');
+    return { latestReply, lastRead };
   };
+
+  const setThreadState = (channel, threadTs, promise) =>
+    threadStates.set(`${channel}-${threadTs}`, { promise, fetchedAt: Date.now() });
+
+  const getThreadState = (channel, threadTs) => {
+    const cached = threadStates.get(`${channel}-${threadTs}`);
+    if (cached && Date.now() - cached.fetchedAt < STALE_MS) return cached.promise;
+    const promise = fetchThreadState(channel, threadTs);
+    promise.catch((error) => console.error('thread state lookup failed:', error.message));
+    setThreadState(channel, threadTs, promise);
+    return promise;
+  };
+
+  const isUnread = ({ latestReply, lastRead }) => !lastRead || latestReply > lastRead;
 
   const markRead = (channel, threadTs, ts) =>
     callApi(MARK_URL, {
@@ -64,29 +80,28 @@
 
   const showStatus = (button, text) => {
     button.textContent = text;
-    setTimeout(() => (button.textContent = LABEL), 2000);
+    setTimeout(() => (button.textContent = button.dataset.label), 2000);
   };
 
   const syncButtons = () =>
     document.querySelectorAll('[data-qa="threads_view_header"]').forEach(syncButton);
 
-  const createButton = (channel, threadTs) => {
+  const createButton = (channel, threadTs, label) => {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'c-button c-button--outline c-button--small';
     button.style.float = 'right';
     button.setAttribute(BUTTON_ATTR, '');
-    button.textContent = LABEL;
+    button.dataset.label = label;
+    button.textContent = label;
     button.addEventListener('click', async () => {
       button.disabled = true;
       try {
-        const ts = await getLastReplyTs(channel, threadTs);
-        await markRead(channel, threadTs, ts);
+        const { latestReply } = await fetchThreadState(channel, threadTs);
+        await markRead(channel, threadTs, latestReply);
+        setThreadState(channel, threadTs, Promise.resolve({ latestReply, lastRead: latestReply }));
         showStatus(button, 'Done');
-        setTimeout(() => {
-          markedRead.set(`${channel}-${threadTs}`, ts);
-          syncButtons();
-        }, 2000);
+        setTimeout(syncButtons, 2000);
       } catch (error) {
         console.error('mark thread read failed:', error.message);
         showStatus(button, 'Failed');
@@ -97,23 +112,27 @@
     return button;
   };
 
-  // Slack puts a "New" divider inside every thread that has unread replies.
-  const getNewDividerTs = (channel, threadTs) => {
-    const prefix = `threads_view_divider-${channel}-${threadTs}-`;
-    return document.querySelector(`[id^="${prefix}"]`)?.id.slice(prefix.length);
+  const getButtonLabel = async (channel, threadTs) => {
+    try {
+      return isUnread(await getThreadState(channel, threadTs)) ? LABEL : null;
+    } catch {
+      return UNKNOWN_LABEL;
+    }
   };
 
-  const syncButton = (header) => {
+  const syncButton = async (header) => {
     const heading = header.closest('[id^="threads_view_heading-"]');
     const [, channel, threadTs] = heading?.id.match(HEADING_ID) ?? [];
     if (!channel) return;
 
-    const dividerTs = getNewDividerTs(channel, threadTs);
-    const markedTs = markedRead.get(`${channel}-${threadTs}`);
-    const unread = dividerTs && (!markedTs || dividerTs > markedTs);
+    const label = await getButtonLabel(channel, threadTs);
     const button = header.querySelector(`[${BUTTON_ATTR}]`);
-    if (!unread) button?.remove();
-    else if (!button) header.prepend(createButton(channel, threadTs));
+    if (!label) button?.remove();
+    else if (!button) header.prepend(createButton(channel, threadTs, label));
+    else if (button.dataset.label !== label) {
+      if (button.textContent === button.dataset.label) button.textContent = label;
+      button.dataset.label = label;
+    }
   };
 
   new MutationObserver(syncButtons).observe(document.body, { childList: true, subtree: true });
